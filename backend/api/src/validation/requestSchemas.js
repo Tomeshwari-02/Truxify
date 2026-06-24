@@ -51,7 +51,12 @@ export const createOrderSchema = z.object({
   is_fragile: z.boolean().default(false).optional(),
   special_requirements: z.string().max(500).optional().nullable(),
   payment_method_id: z.string().optional(),
-  upi_id: z.string().regex(upiRegex, "Invalid UPI ID format").optional().or(z.literal('')).nullable()
+  upi_id: z.string().regex(upiRegex, "Invalid UPI ID format").optional().or(z.literal('')).nullable(),
+  base_freight: z.any().optional(),
+  toll_estimate: z.any().optional(),
+  platform_fee: z.any().optional(),
+  total_amount: z.any().optional(),
+  estimated_price: z.any().optional(),
 }).strict();
 
 export const paramIdSchema = z.object({
@@ -172,9 +177,8 @@ export const updateTicketSchema = z.object({
   }).optional(),
 }).strict();
 
-export const updateProfileSchema = z.object({
-  full_name: z.string().max(100, 'Name must be 100 characters or fewer').optional(),
-  language: z.string().max(10, 'Language code must be 10 characters or fewer').optional(),
-  dark_mode: z.boolean().optional(),
-  is_online: z.boolean().optional(),
+export const createTicketCommentSchema = z.object({
+  message: z.string().transform((v) => v.trim()).pipe(
+    z.string().min(1, 'Message is required').max(1000, 'Message must be 1000 characters or fewer')
+  )
 }).strict();
