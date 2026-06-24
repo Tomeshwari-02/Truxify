@@ -55,12 +55,6 @@ router.post('/tickets', authenticate, userLimiter, validateBody(createTicketSche
   const category = normalizeRequiredText(req.body.category);
   const description = normalizeRequiredText(req.body.description) || subject;
 
-  if (!subject || !category) {
-    return res.status(400).json({
-      error: 'subject and category are required.',
-    });
-  }
-
   // Map user-friendly/frontend categories to database-constrained values
   const CATEGORY_MAP = {
     billing: 'payment',
@@ -219,7 +213,6 @@ router.patch('/tickets/:id', authenticate, userLimiter, validateBody(updateTicke
       return res.status(400).json({ error: 'Cannot update a closed ticket.' });
     }
 
-    const VALID_STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
     const CATEGORY_MAP = {
       billing: 'payment', booking: 'order', payment: 'payment',
       order: 'order', technical: 'technical', general: 'general', account: 'account',
@@ -228,15 +221,11 @@ router.patch('/tickets/:id', authenticate, userLimiter, validateBody(updateTicke
     const updates = { updated_at: new Date().toISOString() };
 
     if (subject !== undefined) {
-      const trimmed = typeof subject === 'string' ? subject.trim() : '';
-      if (!trimmed) {
-        return res.status(400).json({ error: 'subject cannot be empty.' });
-      }
-      updates.subject = trimmed;
+      updates.subject = subject.trim();
     }
 
     if (description !== undefined) {
-      updates.description = typeof description === 'string' ? description.trim() : '';
+      updates.description = description.trim();
     }
 
     if (category !== undefined) {
@@ -247,11 +236,6 @@ router.patch('/tickets/:id', authenticate, userLimiter, validateBody(updateTicke
 
     if (status !== undefined) {
       const normalizedStatus = status.toLowerCase().trim();
-      if (!VALID_STATUSES.includes(normalizedStatus)) {
-        return res.status(400).json({
-          error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}`,
-        });
-      }
       const USER_ALLOWED_STATUSES = ['closed'];
       if (req.user.role !== 'admin' && normalizedStatus !== ticket.status) {
         if (!USER_ALLOWED_STATUSES.includes(normalizedStatus)) {
