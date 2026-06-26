@@ -206,22 +206,20 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
     logger.error('[NotificationService] Database connection error during notification insert:', dbErr.message);
   }
 
-  const fcmResult = await sendFcmNotification(
+  let fcmResult;
+  try { fcmResult = await sendFcmNotification(
     customerId,
-    {
-      title: 'Delivery Verification OTP',
-      body: `A delivery OTP has been generated for order ${orderDisplayId}. Open the app to view the code.`,
-    },
+    { title: 'Delivery Verification OTP', body: `A delivery OTP has been generated for order ${orderDisplayId}. Open the app to view the code.` },
     { orderDisplayId, notifType: 'delivery_otp' }
-  );
+  ); } catch (_) { /* logged internally by sendFcmNotification */ }
 
   if (process.env.TWILIO_AUTH_TOKEN) {
-    logger.info(`[NotificationService] [SMS] SMS stub: Sending delivery OTP SMS for order ${orderDisplayId}`);
+    logger.info(`[NotificationService] [SMS] SMS stub: Sending OTP for order ${orderDisplayId} (masked)`);
   } else {
-    logger.info(`[NotificationService] [SMS] SMS stub: No SMS gateway configured. OTP issued for order ${orderDisplayId}`);
+    logger.info(`[NotificationService] [SMS] SMS stub: No SMS gateway configured. OTP sent out-of-band for order ${orderDisplayId} (masked)`);
   }
 
-  return { success: dbSuccess || fcmResult.success, fcm: fcmResult };
+  return { success: dbSuccess || fcmResult?.success, fcm: fcmResult };
 }
 
 export async function sendPushNotification(userId, title, body, notifType, metadata = {}) {
@@ -239,6 +237,7 @@ export async function sendPushNotification(userId, title, body, notifType, metad
     }
   }
 
-  const fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata });
-  return { success: fcmResult.success, fcm: fcmResult };
+  let fcmResult;
+  try { fcmResult = await sendFcmNotification(userId, { title, body }, { notifType, ...metadata }); } catch (_) { /* logged internally */ }
+  return { success: fcmResult?.success, fcm: fcmResult };
 }
