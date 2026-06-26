@@ -22,7 +22,14 @@ import {
 import { awardReputationPoints } from '../services/reputation.js';
 import { predictDemand, predictPrice } from '../services/ml.js';
 import { changeDropSchema, cancelOrderSchema } from '../validation/requestSchemas.js';
-import { buildDepositTx, recordDepositTx, escrowRelease, escrowRefund, ESCROW_MATIC_PER_PAISA } from '../services/escrow.js';
+import {
+  buildDepositTx,
+  recordDepositTx,
+  escrowRelease,
+  submitEscrowRefund,
+  confirmEscrowRefund,
+  ESCROW_MATIC_PER_PAISA,
+} from '../services/escrow.js';
 import { sendDeliveryOtpNotification, storeDeliveryOtp, getActiveDeliveryOtp, verifyDeliveryOtp, expireDeliveryOtps } from '../services/notificationService.js';
 import logger from '../middleware/logger.js';
 
@@ -1117,42 +1124,146 @@ router.post('/:id/cancel', authenticate, userLimiter, requireRole(['customer']),
       return res.status(409).json({ error: 'Cannot cancel: delivery OTP has already been verified.' });
     }
 
-    let refundTxHash = null;
-    // Phase 1: Process escrow refund BEFORE changing order status
-    if (order.escrow_status === 'funded') {
-      try {
-        const { txHash } = await escrowRefund(order.order_display_id);
-        refundTxHash = txHash;
-      } catch (refundErr) {
-        logger.error('[escrow] Refund failed for order', orderId, ':', refundErr.message);
-        return res.status(502).json({
-          error: 'Escrow refund failed. Order was not cancelled.',
-          details: 'The blockchain transaction could not be completed. Please try again or contact support.',
+    if (order.status === 'cancelled' && order.escrow_status === 'refunded') {
+      return res.json({
+        message: 'Order was already cancelled and refunded.',
+        cancellation_fee: order.cancellation_fee ?? 0,
+        order,
+      });
+    }
+
+    const requiresRefund = ['funded', 'refund_pending', 'refund_failed'].includes(order.escrow_status);
+    let workingOrder = order;
+
+    // Persist cancellation before touching the blockchain. A failed or delayed
+    // refund must never leave the order available for continued work.
+    if (requiresRefund && (order.status !== 'cancelled' || order.escrow_status !== 'refund_pending')) {
+      const attemptAt = new Date().toISOString();
+      const { data: pendingOrder, error: pendingErr } = await supabase
+        .from('orders')
+        .update({
+          status: 'cancelled',
+          cancellation_reason: reason ?? order.cancellation_reason,
+          escrow_status: 'refund_pending',
+          escrow_refund_error: null,
+          escrow_refund_attempts: (order.escrow_refund_attempts ?? 0) + 1,
+          escrow_refund_last_attempt_at: attemptAt,
+          updated_at: attemptAt,
+        })
+        .eq('order_display_id', orderId)
+        .not('status', 'in', '("delivered","payment_released")')
+        .select('*')
+        .single();
+
+      if (pendingErr) {
+        if (pendingErr.code === 'PGRST116') {
+          return res.status(409).json({ error: 'Order was already delivered or payment released. Cannot cancel.' });
+        }
+        return res.status(500).json({
+          error: 'Failed to place the order into refund reconciliation.',
+          details: pendingErr.message,
         });
       }
+      workingOrder = pendingOrder;
+    }
 
-      if (!refundTxHash) {
-        logger.error('[escrow] Refund returned null txHash for order', orderId);
-        return res.status(502).json({
-          error: 'Escrow refund could not be processed. Order was not cancelled.',
+    if (requiresRefund) {
+      let refundTxHash = workingOrder.refund_tx_hash ?? null;
+
+      try {
+        let receipt;
+
+        if (refundTxHash) {
+          receipt = await confirmEscrowRefund(refundTxHash);
+        } else {
+          const submitted = await submitEscrowRefund(order.order_display_id);
+          refundTxHash = submitted.txHash;
+          if (!refundTxHash || !submitted.waitForConfirmation) {
+            throw new Error('Escrow refund transaction was not submitted.');
+          }
+
+          const submittedAt = new Date().toISOString();
+          const { error: hashErr } = await supabase
+            .from('orders')
+            .update({
+              refund_tx_hash: refundTxHash,
+              escrow_refund_submitted_at: submittedAt,
+              updated_at: submittedAt,
+            })
+            .eq('order_display_id', orderId)
+            .eq('escrow_status', 'refund_pending');
+
+          if (hashErr) {
+            logger.error('[escrow] Failed to persist refund tx hash for order', orderId, ':', hashErr.message);
+          }
+          receipt = await submitted.waitForConfirmation();
+        }
+
+        const refundedAt = new Date().toISOString();
+        const { data: updatedOrder, error: updateErr } = await supabase
+          .from('orders')
+          .update({
+            status: 'cancelled',
+            cancellation_reason: reason ?? workingOrder.cancellation_reason,
+            escrow_status: 'refunded',
+            refund_tx_hash: receipt.hash ?? refundTxHash,
+            escrow_refunded_at: refundedAt,
+            escrow_refund_error: null,
+            updated_at: refundedAt,
+          })
+          .eq('order_display_id', orderId)
+          .in('escrow_status', ['refund_pending', 'refund_failed'])
+          .select('cancellation_fee, order_display_id, status, cancellation_reason, escrow_status, refund_tx_hash')
+          .single();
+
+        if (updateErr) {
+          logger.error('[escrow] Refund confirmed but final order update failed for', orderId, ':', updateErr.message);
+          return res.status(202).json({
+            message: 'Order cancelled and escrow refund confirmed. Database reconciliation is pending.',
+            refund_tx_hash: receipt.hash ?? refundTxHash,
+            escrow_status: 'refund_pending',
+            reconciliation_required: true,
+          });
+        }
+
+        await supabase.from('order_timeline').update({ completed: true, milestone_time: refundedAt })
+          .eq('order_display_id', order.order_display_id)
+          .eq('milestone', 'Order Placed');
+
+        return res.json({
+          message: 'Order cancelled and escrow refunded successfully.',
+          cancellation_fee: updatedOrder?.cancellation_fee ?? 0,
+          order: updatedOrder,
+        });
+      } catch (refundErr) {
+        logger.error('[escrow] Refund failed for order', orderId, ':', refundErr.message);
+        const failedAt = new Date().toISOString();
+        const nextEscrowStatus = refundTxHash ? 'refund_pending' : 'refund_failed';
+        await supabase.from('orders').update({
+          status: 'cancelled',
+          escrow_status: nextEscrowStatus,
+          refund_tx_hash: refundTxHash,
+          escrow_refund_error: String(refundErr.message || refundErr).slice(0, 1000),
+          escrow_refund_last_attempt_at: failedAt,
+          updated_at: failedAt,
+        }).eq('order_display_id', orderId);
+
+        return res.status(202).json({
+          message: 'Order cancelled. Escrow refund requires reconciliation.',
+          escrow_status: nextEscrowStatus,
+          refund_tx_hash: refundTxHash,
+          retryable: true,
         });
       }
     } else if (order.escrow_booking_id) {
       logger.info(`[escrow] Escrow not funded (status: ${order.escrow_status}) — skipping on-chain refund.`);
     }
 
-    // Phase 2: Change order status to cancelled and update escrow record atomically
     const updatePayload = {
       status: 'cancelled',
       cancellation_reason: reason,
       updated_at: new Date().toISOString(),
     };
-
-    if (order.escrow_status === 'funded') {
-      updatePayload.escrow_status = 'refunded';
-      updatePayload.refund_tx_hash = refundTxHash;
-      updatePayload.escrow_refunded_at = new Date().toISOString();
-    }
 
     const { data: updatedOrder, error: updateErr } = await supabase.from('orders')
       .update(updatePayload)
