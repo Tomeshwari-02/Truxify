@@ -17,6 +17,7 @@ const trackingSubscriptions = new Map();
 
 // Cached Supabase Realtime channels keyed by orderUUID to avoid creating a new
 // channel per location ping. Reused across pings and cleaned up on disconnect.
+const MAX_LOCATION_CHANNELS = 1000;
 const locationChannels = new Map();
 
 // =====================================================================
@@ -48,7 +49,6 @@ const WS_UPGRADE_RATE_LIMIT = 5;
 const WS_UPGRADE_RATE_WINDOW_SECONDS = 60;
 const MAX_MSG_PER_SECOND = 10;
 const MAX_WS_PAYLOAD_BYTES = 64 * 1024; // 64KB for telemetry payloads
-const messageRateTracker = new WeakMap();
 
 function getClientIp(request) {
   const forwardedFor = request.headers?.['x-forwarded-for'];
@@ -140,7 +140,7 @@ export function initWebSocketServer(server) {
         id: reqUrl.searchParams.get('user_id') || ws.driverId,
         role: reqUrl.searchParams.get('user_role') || 'driver',
       };
-      logger.info(`🔓 WS Auth bypassed for driver: ${ws.driverId}`);
+      logger.info(`WS Auth bypassed for driver: ${ws.driverId}`);
     } else {
       if (!token) {
         ws.close(4001, 'Unauthorized: No token provided');
@@ -218,7 +218,7 @@ export function initWebSocketServer(server) {
         };
         ws.driverId = profile.id;
         await restoreSubscriptions(ws);
-        logger.info(`✅ WS Authenticated user: ${ws.user.id}`);
+        logger.info(`WS Authenticated user: ${ws.user.id}`);
       } catch (err) {
         logger.error({ err }, 'WS Auth failed');
         ws.close(4001, 'Unauthorized: Invalid token');
@@ -226,7 +226,7 @@ export function initWebSocketServer(server) {
       }
     }
 
-    logger.info('🔌 New WebSocket connection established on /ws/tracking');
+    logger.info('New WebSocket connection established on /ws/tracking');
     ws.isAlive = true;
 
     ws.on('pong', () => {
@@ -238,12 +238,12 @@ export function initWebSocketServer(server) {
     });
 
     ws.on('close', () => {
-      logger.info('🔌 WebSocket connection closed.');
+      logger.info('WebSocket connection closed.');
       removeClientFromAllSubscriptions(ws).catch(err => logger.error('Subscription cleanup error on close:', err.message));
     });
 
     ws.on('error', (err) => {
-      logger.error('🔌 WebSocket client error:', err.message);
+      logger.error('WebSocket client error:', err.message);
       removeClientFromAllSubscriptions(ws).catch(err => logger.error('Subscription cleanup error on error:', err.message));
     });
   });
@@ -251,7 +251,7 @@ export function initWebSocketServer(server) {
   wsHeartbeatInterval = setInterval(() => {
     wss.clients.forEach((ws) => {
       if (ws.isAlive === false) {
-        logger.info('🔌 Terminating unresponsive WebSocket client.');
+        logger.info('Terminating unresponsive WebSocket client.');
         return ws.terminate();
       }
       ws.isAlive = false;
@@ -272,7 +272,7 @@ export function initWebSocketServer(server) {
 
   initDriverOnlineExpiry();
 
-  logger.info('🚀 WebSocket tracking router initialized.');
+  logger.info(' WebSocket tracking router initialized.');
 }
 
 async function isMessageRateLimited(ws) {
@@ -293,6 +293,8 @@ async function isMessageRateLimited(ws) {
   } catch (err) {
     logger.error('[ws] Rate limit check error:', err.message);
     return false;
+  }
+
 const DRIVER_ONLINE_TIMEOUT_MS = parseInt(process.env.DRIVER_ONLINE_TIMEOUT_MS, 10) || 5 * 60 * 1000; // 5 minutes
 
 async function expireStaleDriverOnlineStatus() {
@@ -315,15 +317,6 @@ async function expireStaleDriverOnlineStatus() {
 function initDriverOnlineExpiry() {
   const intervalMs = Math.max(DRIVER_ONLINE_TIMEOUT_MS, 60000);
   driverOnlineExpiryInterval = setInterval(expireStaleDriverOnlineStatus, intervalMs);
-}
-
-function isMessageRateLimited(ws) {
-  const now = Date.now();
-  let state = messageRateTracker.get(ws);
-  if (!state || now - state.windowStart >= 1000) {
-    state = { count: 0, windowStart: now };
-    messageRateTracker.set(ws, state);
-  }
 }
 
 export async function handleTrackingMessage(ws, message) {
@@ -577,27 +570,30 @@ export async function handleLocationPing(ws, data) {
   // Publish to Supabase Realtime channel driver-location:{orderId}
   // Reuse cached channel to avoid creating a new channel per ping.
   if (supabase && orderUUID) {
-    if (!locationChannels.has(orderUUID)) {
+    const existing = locationChannels.get(orderUUID);
+    if (existing) {
+      existing.lastUsed = Date.now();
+    } else if (trackingSubscriptions.has(orderDisplayId) || locationChannels.size < MAX_LOCATION_CHANNELS) {
       const channel = supabase.channel(`driver-location:${orderUUID}`);
       channel.subscribe();
       locationChannels.set(orderUUID, { channel, lastUsed: Date.now() });
-    } else {
-      locationChannels.get(orderUUID).lastUsed = Date.now();
     }
-    const { channel } = locationChannels.get(orderUUID);
-    channel.send({
-      type: 'broadcast',
-      event: 'location',
-      payload: {
-        orderId: orderUUID,
-        driverId: driver_id,
-        lat,
-        lng,
-        timestamp: new Date(serverNow).toISOString()
-      }
-    }).catch((err) => {
-      logger.error('Failed to broadcast realtime location to Supabase:', err.message);
-    });
+    const entry = locationChannels.get(orderUUID);
+    if (entry) {
+      entry.channel.send({
+        type: 'broadcast',
+        event: 'location',
+        payload: {
+          orderId: orderUUID,
+          driverId: driver_id,
+          lat,
+          lng,
+          timestamp: new Date(serverNow).toISOString()
+        }
+      }).catch((err) => {
+        logger.error('Failed to broadcast realtime location to Supabase:', err.message);
+      });
+    }
   }
 }
 
@@ -705,7 +701,8 @@ function scheduleNextFlush() {
   }, Math.max(BUFFER_FLUSH_INTERVAL_MS, flushBackoffMs));
 }
 
-const CHANNEL_STALE_MS = 10 * 60 * 1000;
+const CHANNEL_STALE_MS = 2 * 60 * 1000;
+const CHANNEL_CLEANUP_INTERVAL_MS = 60 * 1000;
 let channelCleanupInterval = null;
 
 function cleanupStaleChannels() {
@@ -715,15 +712,18 @@ function cleanupStaleChannels() {
       entry.channel.unsubscribe();
       supabase.removeChannel(entry.channel);
       locationChannels.delete(orderUUID);
-      logger.info(`🔌 Cleaned up stale Supabase channel for order "${orderUUID}"`);
+      logger.info(`Cleaned up stale Supabase channel for order "${orderUUID}"`);
     }
+  }
+  if (locationChannels.size > 0) {
+    logger.info(`[tracker] Active Supabase channels: ${locationChannels.size}`);
   }
 }
 
 function startChannelCleanup() {
   if (channelCleanupInterval) return;
-  channelCleanupInterval = setInterval(cleanupStaleChannels, CHANNEL_STALE_MS);
-  logger.info('[tracker] Supabase channel cleanup interval started (10 min)');
+  channelCleanupInterval = setInterval(cleanupStaleChannels, CHANNEL_CLEANUP_INTERVAL_MS);
+  logger.info('[tracker] Supabase channel cleanup interval started (1 min)');
 }
 
 function loadRecoveryFile() {
@@ -880,7 +880,7 @@ export async function handleSubscribe(ws, data) {
     }
   }
 
-  logger.info(`🔌 Client subscribed to telemetry updates for: "${targetId}"`);
+  logger.info(`Client subscribed to telemetry updates for: "${targetId}"`);
   ws.send(JSON.stringify({ status: 'subscribed', target: targetId, reconnect_supported: true }));
 }
 
@@ -940,7 +940,7 @@ async function handleUnsubscribe(ws, data) {
       }
     }
 
-    logger.info(`🔌 Client unsubscribed from updates for: "${targetId}"`);
+    logger.info(`Client unsubscribed from updates for: "${targetId}"`);
     ws.send(JSON.stringify({ status: 'unsubscribed', target: targetId }));
   }
 }
@@ -949,7 +949,7 @@ async function removeClientFromAllSubscriptions(ws) {
   trackingSubscriptions.forEach((clients, key) => {
     if (clients.has(ws)) {
       clients.delete(ws);
-      logger.info(`🔌 Removed socket subscription from "${key}" due to disconnect.`);
+      logger.info(`Removed socket subscription from "${key}" due to disconnect.`);
     }
     if (clients.size === 0) {
       trackingSubscriptions.delete(key);
@@ -960,7 +960,7 @@ async function removeClientFromAllSubscriptions(ws) {
         channel.unsubscribe();
         supabase.removeChannel(channel);
         locationChannels.delete(key);
-        logger.info(`🔌 Removed Supabase Realtime channel for order "${key}" on last subscriber disconnect.`);
+        logger.info(`Removed Supabase Realtime channel for order "${key}" on last subscriber disconnect.`);
       }
     }
   });

@@ -51,8 +51,13 @@ export const createOrderSchema = z.object({
   is_fragile: z.boolean().default(false).optional(),
   special_requirements: z.string().max(500).optional().nullable(),
   payment_method_id: z.string().optional(),
-  upi_id: z.string().regex(upiRegex, "Invalid UPI ID format").optional().or(z.literal('')).nullable()
-}).passthrough();
+  upi_id: z.string().regex(upiRegex, "Invalid UPI ID format").optional().or(z.literal('')).nullable(),
+  base_freight: z.any().optional(),
+  toll_estimate: z.any().optional(),
+  platform_fee: z.any().optional(),
+  total_amount: z.any().optional(),
+  estimated_price: z.any().optional(),
+}).strict();
 
 export const paramIdSchema = z.object({
   id: uuidSchema
@@ -105,7 +110,7 @@ export const predictDemandSchema = z.object({
 }).strict();
 
 export const updateMilestoneSchema = z.object({
-  milestone: z.enum(['Truck Assigned', 'En Route to Pickup', 'Arrived at Pickup', 'Goods Loaded', 'In Transit', 'Arriving', 'Delivered'], {
+  milestone: z.enum(['Truck Assigned', 'En Route to Pickup', 'Arrived at Pickup', 'Goods Loaded', 'In Transit', 'Arriving'], {
     invalid_type_error: 'Invalid milestone supplied.'
   })
 });
@@ -170,10 +175,25 @@ export const updateTicketSchema = z.object({
   }).optional(),
 }).strict();
 
+export const createTicketCommentSchema = z.object({
+  message: z.string().transform((v) => v.trim()).pipe(
+    z.string().min(1, 'Message is required').max(1000, 'Message must be 1000 characters or fewer')
+  )
+export const driverStatementSchema = z.object({
+  start_date: z.string().refine(value => !Number.isNaN(Date.parse(value)), {
+    message: 'Must be a valid date string',
+  }).optional(),
+  end_date: z.string().refine(value => !Number.isNaN(Date.parse(value)), {
+    message: 'Must be a valid date string',
+  }).optional(),
 
 // Indian vehicle registration plate: 2 letters, 2 digits, up to 3 letters, up to 4 digits
 // e.g. MH12AB1234 or DL01C1234
 const numberPlateRegex = /^[A-Z]{2}\d{2}[A-Z]{1,3}\d{1,4}$/;
+
+export const otpSendSchema = z.object({
+  phone: z.string().trim().min(10).max(20),
+}).strict();
 
 export const registerTruckSchema = z.object({
   name: z.string()
