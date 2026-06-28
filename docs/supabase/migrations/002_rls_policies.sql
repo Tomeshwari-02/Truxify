@@ -148,6 +148,13 @@ CREATE POLICY "Customers update own load offers"
   USING  (customer_id = get_profile_id())
   WITH CHECK (customer_id = get_profile_id());
 
+-- Trigger-based column-level protection: only service_role can modify pricing columns
+DROP TRIGGER IF EXISTS trg_load_offer_pricing_protect ON load_offers;
+CREATE TRIGGER trg_load_offer_pricing_protect
+  BEFORE UPDATE ON load_offers
+  FOR EACH ROW
+  EXECUTE FUNCTION check_load_offer_update_allowed();
+
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- 6. LOAD BIDS
@@ -260,5 +267,24 @@ DROP POLICY IF EXISTS "Drivers view ratings about themselves" ON ratings;
 CREATE POLICY "Drivers view ratings about themselves"
   ON ratings FOR SELECT TO authenticated
   USING (driver_id = get_profile_id());
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Helper: Trigger function to prevent non-service-role users from modifying
+-- pricing columns on load_offers table (Issue #1031)
+-- ────────────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION check_load_offer_update_allowed()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  IF (OLD.freight_value IS DISTINCT FROM NEW.freight_value
+   OR OLD.net_profit IS DISTINCT FROM NEW.net_profit
+   OR OLD.fuel_cost IS DISTINCT FROM NEW.fuel_cost
+   OR OLD.toll_cost IS DISTINCT FROM NEW.toll_cost
+   OR OLD.extra_distance_km IS DISTINCT FROM NEW.extra_distance_km)
+  AND current_role <> 'service_role' THEN
+    RAISE EXCEPTION 'Pricing columns cannot be modified by non-service-role users';
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 COMMIT;

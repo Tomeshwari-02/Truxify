@@ -300,6 +300,18 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
       logger.error('Load Offer Insertion Error:', offerErr.message);
     }
 
+    // Verify pricing was stored correctly (integrity check)
+    const { data: verifyOffer } = await supabase
+      .from('load_offers')
+      .select('freight_value, net_profit, fuel_cost, toll_cost, extra_distance_km')
+      .eq('order_display_id', orderDisplayId)
+      .single();
+
+    if (verifyOffer && verifyOffer.freight_value !== pricing.baseFreight) {
+      logger.error(`[SECURITY] Load offer pricing mismatch for ${orderDisplayId}: ` +
+        `expected ${pricing.baseFreight}, got ${verifyOffer.freight_value}`);
+    }
+
     res.status(201).json({ message: 'Order created successfully and broadcasted to loads board.', order });
   } catch (err) {
     logger.error('Order creation exception:', err.message);
