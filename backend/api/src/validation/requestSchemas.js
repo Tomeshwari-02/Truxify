@@ -60,7 +60,7 @@ export const createOrderSchema = z.object({
 }).strict();
 
 export const paramIdSchema = z.object({
-  id: uuidSchema
+  id: uuidSchema.or(z.string().min(1, "ID is required"))
 });
 
 // Strict UUID-only param schema for routes whose :id maps directly to orders.id (a uuid).
@@ -110,7 +110,7 @@ export const predictDemandSchema = z.object({
 }).strict();
 
 export const updateMilestoneSchema = z.object({
-  milestone: z.enum(['Truck Assigned', 'En Route to Pickup', 'Arrived at Pickup', 'Goods Loaded', 'In Transit', 'Arriving'], {
+  milestone: z.enum(['Truck Assigned', 'En Route to Pickup', 'Arrived at Pickup', 'Goods Loaded', 'In Transit', 'Arriving', 'Delivered'], {
     invalid_type_error: 'Invalid milestone supplied.'
   })
 });
