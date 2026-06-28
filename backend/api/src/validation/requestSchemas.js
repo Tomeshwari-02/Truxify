@@ -142,3 +142,23 @@ export const registerDeviceSchema = z.object({
     invalid_type_error: 'platform must be one of: android, ios, web',
   }).default('android'),
 }).passthrough();
+
+export const createTicketSchema = z.object({
+  subject: z.string().min(1, 'subject is required').trim(),
+  category: z.string().min(1, 'category is required').trim(),
+  description: z.string().trim().optional().nullable()
+}).passthrough();
+
+export const updateTicketSchema = z.object({
+  subject: z.string().min(1, 'subject cannot be empty').trim().optional(),
+  category: z.string().trim().optional(),
+  description: z.string().trim().optional(),
+  status: z.enum(['open', 'in_progress', 'resolved', 'closed']).optional()
+}).passthrough();
+
+export const updateProfileSchema = z.object({
+  full_name: z.string().min(2, 'Name must be at least 2 characters').max(100, 'Name is too long').optional(),
+  language: z.string().length(2, 'Language code must be 2 characters').optional(),
+  dark_mode: z.boolean().optional(),
+  is_online: z.boolean().optional()
+}).passthrough();
