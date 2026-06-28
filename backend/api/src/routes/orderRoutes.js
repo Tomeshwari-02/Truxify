@@ -18,7 +18,9 @@ import {
   acceptBidParamsSchema,
   updateMilestoneSchema,
   verifyDeliverySchema,
-  predictDemandSchema
+  predictDemandSchema,
+  changeDropSchema,
+  cancelOrderSchema
 } from '../validation/requestSchemas.js';
 import { awardReputationPoints } from '../services/reputation.js';
 import { predictDemand, predictPrice } from '../services/ml.js';
@@ -296,6 +298,18 @@ router.post('/', authenticate, userLimiter, requireRole(['customer']), validateB
 
     if (offerErr) {
       logger.error('Load Offer Insertion Error:', offerErr.message);
+    }
+
+    // Verify pricing was stored correctly (integrity check)
+    const { data: verifyOffer } = await supabase
+      .from('load_offers')
+      .select('freight_value, net_profit, fuel_cost, toll_cost, extra_distance_km')
+      .eq('order_display_id', orderDisplayId)
+      .single();
+
+    if (verifyOffer && verifyOffer.freight_value !== pricing.baseFreight) {
+      logger.error(`[SECURITY] Load offer pricing mismatch for ${orderDisplayId}: ` +
+        `expected ${pricing.baseFreight}, got ${verifyOffer.freight_value}`);
     }
 
     res.status(201).json({ message: 'Order created successfully and broadcasted to loads board.', order });
@@ -951,6 +965,7 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requireRole(['dri
       return res.status(400).json({ error: message });
     }
 
+    // Guard against cancellation or a previous successful verification.
     const { data: preUpdatedOrder, error: updateErr } = await supabase.from('orders').update({
       updated_at: new Date().toISOString()
     })
@@ -968,12 +983,17 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requireRole(['dri
     }
 
     // Call complete_trip_tx RPC to atomically update trip, driver stats, wallet, earnings, order status, and timeline.
-    const { error: rpcErr } = await supabase.rpc('complete_trip_tx', { p_order_id: orderId });
+    const { error: rpcErr } = await supabase.rpc('complete_trip_tx', {
+      p_order_id: orderId,
+      p_otp_id: otpRecord.id,
+    });
     if (rpcErr) {
       logger.error('complete_trip_tx RPC failed:', rpcErr.message);
       return res.status(500).json({ error: 'Failed to complete trip and release payment.', details: rpcErr.message });
     }
 
+    // Clear brute-force state only after the OTP and trip transaction commits.
+    await clearOtpState(orderId);
     // Post-RPC verification: confirm the order was actually updated to payment_released
     const { data: verifiedOrder, error: verifyErr } = await supabase
       .from('orders')

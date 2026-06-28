@@ -153,6 +153,13 @@ CREATE POLICY "Customers update own load offers"
   USING  (customer_id = get_profile_id())
   WITH CHECK (customer_id = get_profile_id());
 
+-- Trigger-based column-level protection: only service_role can modify pricing columns
+DROP TRIGGER IF EXISTS trg_load_offer_pricing_protect ON load_offers;
+CREATE TRIGGER trg_load_offer_pricing_protect
+  BEFORE UPDATE ON load_offers
+  FOR EACH ROW
+  EXECUTE FUNCTION check_load_offer_update_allowed();
+
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- 6. LOAD BIDS
