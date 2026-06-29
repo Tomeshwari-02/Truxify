@@ -19,10 +19,27 @@ const loginOtpSchema = z.object({
   otp: z.string().regex(/^\d{4}$/, { message: 'OTP must be 4 digits' }),
 });
 
+export function otpPhoneKey(phone) {
+  if (typeof phone !== 'string') {
+    return 'phone:unknown';
+  }
+
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) {
+    return 'phone:unknown';
+  }
+
+  const nationalDigits = digits.length === 12 && digits.startsWith('91')
+    ? digits.slice(2)
+    : digits;
+
+  return `phone:${nationalDigits}`;
+}
+
 function perPhoneLimiter(opts) {
   return rateLimit({
     ...opts,
-    keyGenerator: (req) => `phone:${req.body.phone || 'unknown'}`,
+    keyGenerator: (req) => otpPhoneKey(req.body.phone),
   });
 }
 
