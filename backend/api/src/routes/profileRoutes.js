@@ -240,7 +240,7 @@ router.put('/fcm-token', authenticate, userLimiter, async (req, res) => {
 // GET DRIVER STATEMENT
 router.get('/driver/statement', authenticate, requireRole(['driver']), userLimiter, validateQuery(driverStatementSchema), async (req, res) => {
   const userId = req.user.id;
-  const { start_date, end_date, sort_by } = req.query;
+  const { start_date, end_date, sort_by, format } = req.query;
 
   try {
     let query = supabase
@@ -301,6 +301,7 @@ router.get('/driver/statement', authenticate, requireRole(['driver']), userLimit
       const csvString = csvRows.map(row => row.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',')).join('\n');
       res.setHeader('Content-Type', 'text/csv');
       return res.send(csvString);
+    }
     if (sort_by === 'net_earnings') {
       tripsList.sort((a, b) => b.net_earnings - a.net_earnings);
     } else if (sort_by === 'base_freight') {
