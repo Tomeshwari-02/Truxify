@@ -154,7 +154,7 @@ const telemetryLimiter = rateLimit({
   max: process.env.NODE_ENV === 'test' ? 1000 : 30, // 30 requests per minute should be enough for telemetry
   keyGenerator: (req) => {
     if (!req.user || !req.user.id) {
-      throw new Error('User is not authenticated');
+      return req.ip ?? 'unknown-ip';
     }
     return req.user.id;
   },
@@ -642,7 +642,8 @@ router.post('/:id/ratings', authenticate, userLimiter, requireRole(['customer'])
     const polygonAddress = driverDetails?.polygon_wallet_address ?? null;
 
     if (polygonAddress) {
-      awardReputationPoints(polygonAddress, stars).catch((repErr) => {
+      // Fire-and-forget: blockchain confirmation must never block the HTTP response.
+      void awardReputationPoints(polygonAddress, stars).catch((repErr) => {
         logger.error('[reputation] On-chain reputation update failed:', repErr.message);
       });
     } else {
