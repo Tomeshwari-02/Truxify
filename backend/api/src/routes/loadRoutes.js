@@ -85,12 +85,15 @@ router.get('/', authenticate, userLimiter, requireRole(['driver']), async (req, 
     }
     query = query.eq('status', statusFilter);
 
+    // Escape LIKE special chars in user input to prevent injection
+    const escapeLike = (s) => String(s).replace(/[%_\\]/g, '\\$&');
+
     // Filters
     if (req.query.pickup_location) {
-      query = query.ilike('pickup_address', `%${req.query.pickup_location}%`);
+      query = query.ilike('pickup_address', `%${escapeLike(req.query.pickup_location)}%`, { escape: '\\' });
     }
     if (req.query.destination) {
-      query = query.ilike('drop_address', `%${req.query.destination}%`);
+      query = query.ilike('drop_address', `%${escapeLike(req.query.destination)}%`, { escape: '\\' });
     }
     if (req.query.goods_type) {
       query = query.eq('goods_type', req.query.goods_type);
